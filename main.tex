@@ -1,0 +1,1702 @@
+%% LyX 2.3.6.2 created this file.  For more info, see http://www.lyx.org/.
+%% Do not edit unless you really know what you are doing.
+\documentclass[english,compsoc]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[latin9]{inputenc}
+\usepackage{babel}
+\usepackage{verbatim}
+\usepackage{float}
+\usepackage{mathtools}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{amssymb}
+\usepackage{cancel}
+\usepackage{graphicx}
+\usepackage[unicode=true,pdfusetitle,
+ bookmarks=true,bookmarksnumbered=false,bookmarksopen=false,
+ breaklinks=false,pdfborder={0 0 1},backref=false,colorlinks=false]
+ {hyperref}
+
+\makeatletter
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% LyX specific LaTeX commands.
+%% Because html converters don't know tabularnewline
+\providecommand{\tabularnewline}{\\}
+\floatstyle{ruled}
+\newfloat{algorithm}{tbp}{loa}
+\providecommand{\algorithmname}{Algorithm}
+\floatname{algorithm}{\protect\algorithmname}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Textclass specific LaTeX commands.
+\numberwithin{equation}{section}
+\numberwithin{figure}{section}
+\theoremstyle{plain}
+\newtheorem{thm}{\protect\theoremname}
+\newenvironment{lyxcode}
+	{\par\begin{list}{}{
+		\setlength{\rightmargin}{\leftmargin}
+		\setlength{\listparindent}{0pt}% needed for AMS classes
+		\raggedright
+		\setlength{\itemsep}{0pt}
+		\setlength{\parsep}{0pt}
+		\normalfont\ttfamily}%
+	 \item[]}
+	{\end{list}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% User specified LaTeX commands.
+\usepackage{adjustbox}
+\usepackage{pgfplots}
+\usetikzlibrary{
+    patterns,
+    chains,
+    backgrounds,
+    calc,
+    shadings,
+    shapes.arrows,
+    arrows,
+    shapes.symbols,
+    shadows,
+    positioning,
+    decorations.markings,
+    backgrounds,
+    arrows.meta,
+    external
+}
+
+\@ifundefined{showcaptionsetup}{}{%
+ \PassOptionsToPackage{caption=false}{subfig}}
+\usepackage{subfig}
+\makeatother
+
+\providecommand{\theoremname}{Theorem}
+
+\begin{document}
+\title{Sampling through Joins}
+\author{Maksim Levental, Greg Pauloski}
+
+\maketitle
+\tableofcontents{}
+
+\section*{Abstract}
+
+In most relational databases, joins $\mathtt{JOIN}\text{\ensuremath{\left(R_{1},R_{2}\right)}}$
+between two tables $R_{1}$ and $R_{2}$ are expensive, especially
+on large tables (owing to the join having maximum cardinality $\lvert R_{1}\rvert\times\lvert R_{2}\rvert$).
+Often joins are used for the purposes of computing aggregations (e.g.
+\texttt{SUM}, \texttt{AVG}, \texttt{COUNT}). One potential optimization
+is to \texttt{SAMPLE} the operand tables. Unfortunately, in general,
+\texttt{SAMPLE} doesn\textquoteright t commute with \texttt{JOIN}.
+We aim to study the regimes under which the operations do commute
+and what are the tradeoffs when they don\textquoteright t.
+
+\section{Introduction}
+
+Joins are a fundamental operator in the relational algebra entailed
+by E.F. Codd's relational model of data \cite{codd_relational}; they're
+used to bridge seemingly unrelated entities and analyze implied relationships.
+By definition, joins are a subset of the cartesian product of some
+relations and therefore incur compute cost proportional to that product
+(i.e. exponential in the number of relations to be joined). In many
+instances, joins are employed as a preprocessing step in order to
+compute an aggregation function over resulting data, such as a sum,
+an average, or a count. In such instances it is often acceptable,
+and occasionally even preferable, to construct estimates (along with
+error guarantees) of the functions based on a sample of the entire
+join; one obvious advantage is in the reduction on the execution time
+of the aggregation function. Naturally this prompts the question of
+whether the operand relations in the join can themselves sampled (as
+opposed to ultimately sampling the join) and whether the join need
+be constructed at all. Alternatively, when relations aren't materialized,
+\textit{online} aggregation, using online sampling, can be performed
+using similar such sampling techniques.
+
+We therefore proceed to study when sampling commutes with joins by
+reviewing a sampling\footnote{Pun intended.} of the literature on
+such techniques and then performing some experiments to verify/validate
+the most distinctive techniques. The rest of the report is organized
+as follows: section \ref{subsec:background} briefly discusses the
+necessary background on sampling and joins, section \ref{sec:Techniques}
+reviews several techniques, culminating in a taxonomy that categorizes
+said techniques according to constraints and performance (see tbl.
+\ref{tbl:techniques}), section \ref{sec:Experiments} describes and
+reviews our experiments, and finally section \ref{sec:Conclusion}
+concludes with some conjecture about promising research directions.
+
+\section{Background\label{subsec:background}}
+
+\subsection{Joins}
+
+Let $R_{1},R_{2}$ be \textit{relations} on respective\textit{ attributes
+$\left(A,B\right),\left(B,C\right)$. }The \textit{natural join} $J\coloneqq R_{1}\bowtie R_{2}$
+is defined as the set of all pairs of tuples in $R_{1}$ and $R_{2}$
+that are equal on their common attribute $A$
+\[
+J\coloneqq\left\{ \left(t_{1},t_{2}\right)\mid t_{1}.B=t_{2}.B\wedge t_{1}\in R_{1},t_{2}\in R_{2}\right\} 
+\]
+The extension to $K$ relations and multiple common attributes is
+the natural conjunction. Note that if $R_{1},R_{2}$ have no common
+attributes then the join condition is vacuously true and $R_{1}\bowtie R_{2}\equiv R_{1}\times R_{2}$,
+the cartesian product\footnote{Sometimes called the \textit{cross join} of\textit{ }$R_{1},R_{2}$.}
+of $R_{1},R_{2}$. We will also have need of joins between relations
+that have a conditional relationship between some columns; define
+a $\theta$-join $R_{1}\bowtie_{A\theta B}R_{2}$ of relations $R(A,\dots),R(B,\dots)$
+on attributes $A,B$ with respect to some binary operator $\left\{ <,\le,=,\neq,>,\ge\right\} $
+as all tuples in $R_{1}\bowtie R_{2}$ such that $a\theta b$ evaluates
+to true, for $a\in A,b\in B$ . The particular case of $\theta$ being
+the equality operator $=$ is called an \textit{equijoin}.
+
+We can also model $K$-joins (joins between $K$ relations) as a hypergraph\footnote{A generalization of a graph in which an edge can join any number of
+vertices. } on the union of all attributes in all $R_{i}$; let $\mathcal{A}\left(R_{i}\right)$
+be the attributes of $R_{i}$ and 
+\[
+\mathcal{A}\coloneqq\bigcup_{i=1}^{K}\mathcal{A}\left(R_{i}\right)
+\]
+\begin{figure}
+\begin{centering}
+\subfloat[Chain join \label{fig:chainjoin}]{\includegraphics[width=0.5\linewidth]{chainjoin}}
+\par\end{centering}
+\medskip{}
+
+\begin{centering}
+\subfloat[Acyclic (or tree/star) join \label{fig:starjoin}]{\includegraphics[width=0.5\linewidth]{starjoin}}
+\par\end{centering}
+\medskip{}
+
+\begin{centering}
+\subfloat[Cyclic join \label{fig:cyclicjoin}]{\includegraphics[width=0.5\linewidth]{cyclicjoin}}
+\par\end{centering}
+\caption{Join for relations $R_{1},R_{2},R_{3},R_{4},R_{5}$ \cite{JoinsRevisited}.\label{fig:Join-for-relations}}
+\end{figure}
+Then a join is a set of vertices corresponding to individual attributes
+and a hyperedge contains/connects all the attributes of an individual
+relationship. Using this model we can represent three distinct classes
+of joins:
+\begin{itemize}
+\item \textit{Chain join}: joins where relations can easily be ordered such
+that consecutive relations share one attribute (see fig. \ref{fig:chainjoin}).
+\item \textit{Acyclic join}: also known as a tree or star join, these are
+joins where there is no cycle on the join hypergraph (see fig. \ref{fig:starjoin}). 
+\item \textit{Cyclic join}: joins where there is a cycle on the join hypergraph
+(see fig. \ref{fig:cyclicjoin}).
+\end{itemize}
+
+\subsection{Sampling}
+
+Let $R$ be a relation over some attributes with cardinality $n\coloneqq\left|R\right|$.
+For $0\leq f\leq1$, $\mathtt{SAMPLE}\left(R,f\right)$ is defined
+to be a uniformly random sample $S$ of tuples in $R$ such that $\left|S\right|=f\cdot n$\footnote{Taking floor or ceiling when $f\cdot n$ is not an integer.}.
+A priori the sampling semantics are unspecified; indeed, there are
+three distinct interpretations of sampling: 
+\begin{itemize}
+\item \textit{Sampling with replacement }(WR): sample $f\cdot n$ tuples
+uniformly and independently with replacement. The result is bag (multiset)
+of tuples.
+\item \textit{Sampling without replacement }(WoR): sample $f\cdot n$ \textit{distinct}
+tuples, i.e. each successive tuple is sampled from the remaining set
+of tuples.
+\item \textit{Coin flip sampling} (CF): for each tuple in $R$, choose that
+tuple with probability $f$ (and reject with probability $1-f$).
+This essentially produces a draw from a binomial distribution $B(n,f)$
+where heads correspond to chosen tuples.
+\end{itemize}
+Note we can transform amongst these interpretations for various input,
+output pairs \cite{ChaudhuriRandomSampling}.
+
+Furthermore, sampling can either be \textit{correlated}\footnote{Inclusion of a member of the sample implies, with some probability,
+inclusion of some other member.} or \textit{uncorrelated}; we will see that correlated samples lead
+to higher error rates than uncorrelated samples (see sec. \ref{subsec:Universe-sampling}).\textit{
+}We are also particularly interested in \textit{streaming} or \textit{sequential
+sampling}, which is the act of sampling a relation as it streams by,
+for example in instances when the relation is produced iteratively
+by some long running process. We will also have need of \textit{weighted
+sampling}, wherein elements are sampled with probability proportional
+to some weight assigned to those elements.
+
+\begin{comment}
+Let $J_{t}\left(R_{2}\right)\coloneqq\left\{ t'\in R_{2}\mid t'.A=t.A\right\} $
+be the set of tuples in $R_{2}$ that join with $t\in R_{1}$ and,
+furthermore, define $t\bowtie R_{2}\coloneqq t\bowtie J_{t}\left(R_{2}\right)$
+i.e. the set of tuples in $R_{1}\bowtie R_{2}$ contributed by matching
+against $t$. Thus, almost tautologically 
+\[
+\left|t\bowtie R_{2}\right|=\left|t\bowtie J_{t}\left(R_{2}\right)\right|=\left|J_{t}\left(R_{2}\right)\right|=m_{2}\left(t.A\right)
+\]
+Similarly define $J_{t}\left(R_{1}\right),R_{1}\bowtie t$ for $t\in R_{2}$
+and observe $\left|J_{t}\left(R_{1}\right)\right|=m_{1}\left(t.A\right)$.
+\end{comment}
+
+
+\subsection{The join sampling problem}
+
+First we make some elementary observations. Let $R_{1},R_{2}$ be
+two relations of cardinalities $n_{1},n_{2}$ respectively and $J\coloneqq R_{1}\bowtie R_{2}$,\textit{
+}with \textit{$n\coloneqq\left|J\right|$,} and further suppose $R_{1},R_{2}$
+only have common attribute $A\subseteq D$ for some domain $D$. For
+all $v\in D$, let $m_{1}\left(v\right),m_{2}\left(v\right)$ be the
+frequencies (i.e. quantities) of tuples in $R_{1},R_{2}$, respectively,
+for which attribute $A$ takes on value $v$
+\[
+m_{i}\left(v\right)\coloneqq\left|\left\{ t\mid v\in D\wedge t\in R_{i}\wedge t.A=v\right\} \right|
+\]
+for $i=1,2$. Note that for $v\in D\backslash A$, we have $m_{i}\left(v\right)=0$.
+Then
+\[
+\sum_{v\in D}m_{i}(v)=n_{i}
+\]
+ That is to say, projecting from $R_{i}$ to $A$ partitions the relation
+$R_{i}$. Clearly 
+\[
+n=\sum_{v\in D}m_{1}(v)\cdot m_{2}(v)
+\]
+since each tuple in $R_{1}$ that contributes to $m_{1}(v)$ joins
+with $m_{2}(v)$ tuples in $R_{2}$ and vice-versa. 
+
+Consider sampling from relations $R_{1}\left(A,B\right),R_{2}\left(B,C\right)$
+defined as such
+\[
+\begin{aligned}R_{1} & \coloneqq\left\{ \left(a_{1},b_{0}\right),\left(a_{2},b_{1}\right),\left(a_{2},b_{2}\right),\dots,\left(a_{2},b_{K}\right)\right\} \\
+R_{2} & \coloneqq\left\{ \left(a_{2},c_{0}\right),\left(a_{1},c_{1}\right),\left(a_{1},c_{2}\right),\dots,\left(a_{1},c_{K}\right)\right\} 
+\end{aligned}
+\]
+Observe that $m_{1}\left(a_{1}\right)=m_{2}\text{\ensuremath{\left(a_{2}\right)}}=K$
+and thus 
+\begin{align*}
+\left|R_{1}\bowtie R_{2}\right| & =\sum_{v\in D}m_{1}(v)\cdot m_{2}(v)\\
+ & =m_{1}(a_{1})\cdot m_{2}(a_{1})+m_{1}(a_{2})\cdot m_{2}(a_{2})\\
+ & =K+K=2K
+\end{align*}
+We observe that there is \textit{skew }between the relations in the
+different attribute values for which the join occurs. Suppose we wish
+to construct $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$;
+we should expect that half of the tuples $t$ in such a sample will
+have $t.A=a_{1}$ and the other half will have $t.A=a_{2}$. Unfortunately,
+if we attempt to sample each of $R_{1},R_{2}$ independently and then
+perform the join we are unlikely to get the correct result: the probability
+that a uniform sample from $R_{1}$ contains the tuple $\left(a_{1},b_{0}\right)$
+is $1/(K+1)$ and similarly for $\left(a_{2},c_{0}\right)\in R_{2}$.
+Indeed, with high probability\footnote{$\left(1-\frac{1}{k+1}\right)\cdot\left(1-\frac{1}{k+1}\right)=1-O\left(\frac{1}{k}\right)$.}
+\[
+\mathtt{SAMPLE}\left(R_{1},f\right)\bowtie\mathtt{SAMPLE}\left(R_{2},f\right)=\emptyset
+\]
+
+This demonstrates that the crux of the \textit{join sampling problem}
+is that, for $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$,
+each tuple $t_{1}\in R_{1}$ is sampled in direct proportion to the
+quantity of tuples $t_{2}\in R_{2}$ that join with it, and vice-versa.
+To wit:
+\begin{multline}
+R_{1}\bowtie R_{2}=\left\{ \left(a_{1},b_{0},c_{1}\right),\dots,\left(a_{1},b_{0},c_{K}\right),\right.\\
+\left.\left(a_{2},b_{1},c_{0}\right),\dots,\left(a_{2},b_{K},c_{0}\right)\right\} \label{eq:correlatedsample}
+\end{multline}
+Thus, $\left(a_{1},b_{0}\right)\in R_{1}$ is sampled from $R_{1}\bowtie R_{2}$
+with probability $1/2$ while the remaining tuples in $R_{1}$ are
+sampled each with probability $1/2K$. That is to say, $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+corresponds to a weighted sample of $R_{1}$ rather than a uniformly
+random sample. Thus, it is in general, impossible to construct a uniform
+random sample of $R_{1}\bowtie R_{2}$ by first uniformly sampling
+each of $R_{1},R_{2}$:
+\begin{thm}
+Given uniform random samples $S_{i}\coloneqq\mathtt{SAMPLE}\left(R_{i},f_{i}\right)$
+with $f_{i}<1$ it is impossible to construct a uniform random $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+from $S_{1},S_{2}$ for any $f>0$.\label{thm:Given-uniform-random}
+\end{thm}
+\noindent In fact, even if we bound the skew we cannot hope to achieve
+such a sample \cite{ChaudhuriRandomSampling}:
+\begin{thm}
+Given a common attribute value $v$ for relations $R_{1},R_{2}$ and
+attribute frequencies $m_{1}\left(v\right),m_{2}\left(v\right)$,
+it is impossible to construct a uniformly random $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+from $S_{1},S_{2}$ (as defined in thm. \ref{thm:Given-uniform-random})
+unless\textup{
+\[
+\begin{array}{c}
+f_{1}\geq\frac{f\cdot m_{2}}{2}\mbox{ and }f_{2}\geq\frac{f\cdot m_{1}}{2}\mbox{ for }f\leq\frac{1}{\max\left\{ m_{1},m_{2}\right\} }\\
+\\
+\mbox{ or }\\
+\\
+f_{1}\geq\frac{1}{2}\mbox{ and }f_{2}\geq\frac{1}{2}\mbox{ for }f\leq\frac{1}{\min\left\{ m_{1},m_{2}\right\} }
+\end{array}
+\]
+}
+\end{thm}
+\noindent Therefore, in general, we cannot commute $\mathtt{SAMPLE}$
+with $\bowtie$. However, this does not preclude the possibility of
+\textit{non-uniformly} random sampling each of $R_{1},R_{2}$ in order
+to construct a uniformly random sample of $R_{1}\bowtie R_{2}$. We
+shall see that this will be the primary path to resolution of the
+join sampling problem.
+
+\subsection{Online aggregation}
+
+Consider a SQL query of the form
+\begin{lyxcode}
+SELECT~$g$,~AGG$\left(g\left(R_{1},R_{2},\dots,R_{K}\right)\right)$
+
+FROM~$R_{1},R_{2},\dots,R_{K}$
+
+WHERE~$\theta\left(R_{1},R_{2},\dots,R_{K}\right)$~AND~$\sigma_{\varphi}\left(R_{1},R_{2},\dots,R_{K}\right)$
+
+GROUP~BY~$g$
+\end{lyxcode}
+where \texttt{$\theta$ }is the aforementioned join condition operator,
+\texttt{$g\left(R_{1},R_{2},\dots,R_{K}\right)$ }is an expression
+that involves any attributes of the relations $R_{1},R_{2},\dots,R_{K}$,
+$\mathtt{AGG}\in\left\{ \mathtt{SUM},\mathtt{AVG},\mathtt{COUNT},\dots\right\} $,
+and $\sigma_{\varphi}$ selects tuples that satisfy the condition
+$\varphi$. An effective online aggregation algorithm iteratively
+produces an estimator $\hat{Y}_{n}$ for \texttt{AGG}$\left(g\right)$,
+at every iteration $n$, along with confidence intervals (CIs)
+\[
+I_{n}\coloneqq\left[\hat{Y}_{n}-\epsilon_{n},\hat{Y}_{n}+\epsilon_{n}\right]
+\]
+where $\epsilon_{n}$ (called the \textit{precision}, or \textit{margin
+of error)} is defined as a function of $\alpha$, the \textit{confidence
+level},\textit{ }by
+
+\[
+P\left(\left|\hat{Y}_{n}-\mathtt{AGG}\left(g\right)\right|\leq\epsilon_{n}\right)\geq\alpha
+\]
+For example, if estimators are derived by using the Central Limit
+Theorem, then 
+\[
+\epsilon_{n}\coloneqq\frac{z_{p}\hat{\sigma}_{n}}{\sqrt{n}}
+\]
+where $z_{p}$ is the \textit{z-score}\footnote{The unique number such that $P\left(-z_{p}\leq Z\leq z_{p}\right)=p$
+for $Z\sim\mathcal{N}\left(0,1\right)$ where $\mathcal{N}\left(0,1\right)$
+is the standard Normal distribution.} corresponding to a $100p\%$ confidence level. Typically one of $\epsilon_{n},\alpha$
+(but not both) is specified by the user and the algorithm reports
+the other as it proceeds; the user terminates the query when the unspecified
+parameter reaches a desired value. This early termination, given the
+users error preferences, is the chief advantage of online aggregation
+over evaluating $\mathtt{AGG}\left(g\left(R_{1},R_{2},\dots,R_{K}\right)\right)$
+on the join in its entirety.
+
+\section{Techniques\label{sec:Techniques}}
+
+We consider the problem of constructing $\mathtt{SAMPLE}\left(R_{1}\bowtie\cdots\bowtie R_{K},f\right)$
+by means of sampling the operand relations $R_{i}$. We often restrict
+ourselves to joins over one common attribute $A$ but discuss necessary
+extensions to multi-attribute joins. In the proceeding we partition
+techniques according to how much information is at our disposal for
+each of the relations $R_{i}$:
+\begin{itemize}
+\item \textit{Frequencies}: complete frequencies (for each possible value)
+for all relevant attributes.
+\item \textit{Partial frequencies}: frequencies for only the high frequency
+values; this is a useful category since it is in fact these values
+that distort the ultimate sample. 
+\item \textit{Frequency upper bounds}: upper bounds on the frequencies of
+values of relevant attributes; these are useful as a proxy for complete
+or partial frequencies. 
+\item \textit{Index}: a means to perform indexed access (as opposed to sequential)
+on tuples of a relation according to values of some attribute; crucially
+we require the ability to also evaluate predicates on said attribute.
+\end{itemize}
+Thus, we produce a classification of techniques according to whether
+we have statistics (full or partial) and indices for both $R_{i}$,
+neither, or something in between (see tbl. \ref{tbl:techniques}).
+
+\begin{table*}
+\caption{Techniques}
+\label{tbl:techniques}
+\centering{}%
+\begin{tabular}{|c|c|c|c|}
+\hline 
+Strategy & $R_{1}$ & $R_{i}$ & Complexity\tabularnewline
+\hline 
+\hline 
+Olken sampling \cite{olken1993random} & Index & Index and freqs & e.g. $O\left(M\left|R_{1}\right|/\left|R_{1}\bowtie R_{2}\right|\right)$
+per tuple in result \tabularnewline
+\hline 
+Stream sampling \cite{ChaudhuriRandomSampling} & --- & Index and freqs & $O\left(1\right)$ per tuple in result\tabularnewline
+\hline 
+Group sampling \cite{ChaudhuriRandomSampling} & --- & Frequencies & e.g. $O\left(\alpha_{1}\left|R_{1}\bowtie R_{2}\right|\right)$ \tabularnewline
+\hline 
+Frequency-partition sampling \cite{ChaudhuriRandomSampling} & --- & End-biased freqs & e.g. $O\left(\alpha_{2}\left|R_{1}\bowtie R_{2}\right|\right)$\tabularnewline
+\hline 
+Index sampling \cite{ChaudhuriRandomSampling} & --- & Index $R_{i}^{hi}$ and end-biased freqs & e.g. $O\left(\alpha_{3}\left|R_{1}\bowtie R_{2}\right|\right)$\tabularnewline
+\hline 
+Universe sampling \cite{universesampling} & --- & --- & e.g. $O\left(\max\left(\left|R_{1}\right|,\left|R_{2}\right|\right)\right)$\tabularnewline
+\hline 
+MaxRand join \cite{corrsampling} & Index and freqs & Index and freqs & $O\left(\left|D\right|\left|K\right|+\sum_{i=1}^{K}N\left(1+\log\left(\frac{\left|R_{i}\right|}{N}\right)\right)\right)$\tabularnewline
+\hline 
+Ripple join\cite{ripplejoin} & Index & Index & $O\left(\sqrt{\left|R_{i}\right|/d}\right)$ per tuple in result \tabularnewline
+\hline 
+Hash ripple join\cite{ripplejoin} & Index & Index & $O\left(\sqrt{\left|R_{i}\right|/d}\right)$ per tuple in result \tabularnewline
+\hline 
+Wander join\cite{wanderjoin} & Index & Index & $O\left(1/2^{K-1}\right)$ per tuple in result for $K$ relations\tabularnewline
+\hline 
+Upper bound join \cite{agmbound} & Index & Index and upper bounds & $1/W\left(t\right)$ for $t\in R_{i}$\tabularnewline
+\hline 
+\end{tabular}
+\end{table*}
+Several of the described techniques make use of more general sampling
+algorithms such as reservoir sampling and rejection sampling. Consult
+appendix \ref{subsec:Stream-sampling-algorithms} for brief descriptions.
+We relegate techniques that are derivations on a theme (and whose
+pseudo-code descriptions are involved) to the appendix as well (see
+appendix \ref{subsec:Technique-implementations}). 
+
+\subsection{Olken sampling\label{subsec:Olken-sample}}
+
+Olken sampling only applies in the best possible case; for example,
+when we have random access on $R_{1}$ and $R_{2}$ and full frequency
+statistics for $R_{2}$. In this case we use rejection sampling (see
+sec. \ref{subsec:Rejection-sampling}) to produce tuples in $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+by sampling from tuples $R_{1}$ in direct proportion to their frequency
+in $R_{2}$ (see alg. \ref{alg:olkensample}). With $M\coloneqq\max_{v\in D}m_{2}\left(v\right)$,
+for $v\in A\subseteq D$, Olken sampling produces a WR sample of $R_{1}\bowtie R_{2}$
+and requires $Mn_{1}/n$ iterations for each output tuple \cite{ChaudhuriRandomSampling},
+where $n\coloneqq\left|R_{1}\bowtie R_{2}\right|$ and $n_{1}\coloneqq\left|R_{1}\right|$.
+
+\begin{algorithm}
+\caption{Olken Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~$R_{1}\left(A,\dots\right),R_{2}\left(A,\dots\right)$~
+
+~~$M\coloneqq\max_{v\in D}m_{2}\left(v\right)$~
+
+~~$k\coloneqq\left\lceil f\cdot\left|R_{1}\bowtie R_{2}\right|\right\rceil $
+
+\textbf{Output}:~$S$,~a~$\mathtt{SAMPLE}_{WR}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Init:~}
+
+~~$S[\cdots]\coloneqq0$
+
+~~//~sample~$t_{1}$~from~$R_{1}$~uniformly
+
+~~$t_{1}\sim U(R_{1})$~
+
+~~//~sample~matching~rows~in~$R_{2}$
+
+~~$t_{2}\sim U\left(\left\{ t\mid t\in R_{2}\wedge t.A=t_{1}.A\right\} \right)$~~
+
+\textbf{Begin}:
+
+~~for~$i\coloneqq1$~to~$k$:~
+
+~~~~//~accept~in~proportion~with~the
+
+~~~~//~frequency~$m_{2}\left(t_{1}.A\right)$~
+
+~~~~while~$m_{2}\left(t_{2}.A\right)<U\left(0,M\right)$:~
+
+~~~~~~$t_{1}\sim U(R_{1})$~
+
+~~~~~~$t_{2}\sim U\left(\left\{ t\mid t\in R_{2}\wedge t.A=t_{1}.A\right\} \right)$\label{alg:olkensample}
+
+~~~~$S[i]\coloneqq\left(t_{1},t_{2}\right)$~
+\end{lyxcode}
+\end{algorithm}
+
+
+\subsubsection{Stream sampling}
+
+On the occasion where we have only streaming access to $R_{1}$ we
+can use weighted stream sampling (see sec. \ref{subsec:Weighted-streaming-sampling}),
+with weights defined as $w(t)\coloneqq m_{2}\left(t_{1}.A\right)$,
+and join each such tuple with a randomly selected tuple from $R_{1}$.
+See alg. \ref{alg:streamsample}. Note that we do constant work per
+included tuple.
+
+\subsubsection{Group sampling}
+
+In the case where we further reduce our information to only statistics
+(no index) for $R_{2}$, we can weighted sample tuples $t_{1}$ from
+$R_{1}$ and then sample from $t_{1}\bowtie R_{2}$. In effect performing
+a \texttt{GROUP BY} (see alg. \ref{alg:groupsample}). We perform
+the second sampling using unweighted sampling with replacement. The
+cost of this strategy depends on the cardinalities $\left|t_{1}\bowtie R_{2}\right|$:
+\[
+\alpha_{1}\coloneqq r\times\frac{\sum_{v\in D}m_{1}\left(v\right)m_{2}\left(v\right)^{2}}{\left(\sum_{v\in D}m_{1}\left(v\right)m_{2}\left(v\right)\right)^{2}}
+\]
+
+\noindent Note that this strategy compares very favorably to naive
+sampling\footnote{Constructing the entire join and then using unweighted sampling on
+the result.} (the only other possible strategy for this set of circumstances).
+
+\subsubsection{Frequency-partition sampling\label{subsec:Frequency-partition-sample}}
+
+Suppose we now only have an end-biased histogram\footnote{Frequencies for all values that occur $l$ or more times.}
+for $R_{2}$. We can then logically partition $R_{2}$ into those
+tuples with high-frequency $D^{hi}$ values and their complement $D^{lo}$
+(tuples with low-frequency values) and notice that it's the former
+set of tuples that are responsible for the skew that is the core of
+the sampling problem (see alg. \ref{alg:Frequency-Partition-Sample}).
+These $D^{hi}$ values function to inflate the join. Therefore we
+can improve efficiency by taking a hybrid approach: by employing group
+sample strategy on $D^{hi}$ \footnote{Thereby saving having to compute the full join for the bulk of the
+tuples.} and naively sampling on $D^{lo}$. Working to our advantage is the
+fact that there cannot be too many high-frequency values and that
+it is precisely this set of values for which maintaining the frequencies
+is cheap \footnote{Since, tautologically, they are observed frequently and can be readily
+sketched.}.
+
+The remaining issue is how to determine the allocation of the sample
+to each group: take $k\coloneqq\left\lceil f\cdot\left|R_{1}\bowtie R_{2}\right|\right\rceil $
+from each subset and then cull in each subset in order to reduce the
+total quantity \footnote{By CF sampling with $p$ being equal to the relative fractions of
+tuples in each subset}. The primary advantage of this algorithm is that it only requires
+an end-biased histogram for $R_{2}$. The cost incurred by the frequency
+partition sample strategy is $O\left(\alpha_{2}\left|R_{1}\bowtie R_{2}\right|\right)$
+where 
+\[
+\alpha_{2}\coloneqq\frac{\sum_{v\in D^{lo}}m_{1}\left(v\right)m_{2}\left(v\right)+r\times\frac{\sum_{v\in D^{hi}}m_{1}\left(v\right)m_{2}\left(v\right)^{2}}{\sum_{v\in D^{hi}}m_{1}\left(v\right)m_{2}\left(v\right)}}{\sum_{v\in D}m_{1}\left(v\right)m_{2}\left(v\right)}
+\]
+
+
+\subsubsection{Index sampling}
+
+If an index is available for the high-frequency values $R_{2}^{hi}$,
+in addition to just the frequencies themselves, then a more efficient
+version of frequency partition sample is possible: we can save having
+to compute the full join since
+\begin{multline*}
+\left(S_{1}\cup R_{1}^{lo}\right)\bowtie R_{2}\equiv\left(S_{1}\cup R_{1}^{lo}\right)\bowtie\left(R_{2}^{lo}\cup R_{2}^{hi}\right)\\
+\equiv\cancel{\left(S_{1}\bowtie R_{2}^{hi}\right)}\cup\left(S_{1}\bowtie R_{2}^{lo}\right)\cup\left(R_{1}^{lo}\bowtie R_{2}\right)
+\end{multline*}
+and instead uses the same idea as in stream sample\footnote{$t_{1}\in S_{1}\wedge t_{2}\sim U\left(\left\{ t\mid t\in R_{2}^{hi}\wedge t.A=t_{1}.A\right\} \right)$}
+to select a random tuple in $R_{2}^{hi}$ per tuple in $S_{1}$. The
+cost incurred by the Index sample strategy is $O\left(\alpha_{3}\left|R_{1}\bowtie R_{2}\right|\right)$
+where
+\[
+\alpha_{3}\coloneqq\frac{\sum_{v\in D^{lo}}m_{1}\left(v\right)m_{2}\left(v\right)+r}{\sum_{v\in D}m_{1}\left(v\right)m_{2}\left(v\right)}
+\]
+
+
+\subsubsection{Count sampling}
+
+Strictly speaking an index for $R_{2}^{hi}$ isn't necessary and can
+be replaced by a scan across $R_{2}^{hi}$ instead. See alg. \ref{alg:count-sample}.
+
+\subsection{Universe sampling\label{subsec:Universe-sampling}}
+
+Given an attribute $A$ and a perfect\footnote{Collision free.} hash
+function $h:A\rightarrow\left[0,1\right]$ we can compute $\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+by hashing \cite{universesampling} tuples $t_{1},t_{2}\in R_{1},R_{2}$
+and rejecting those that fall outside of $\left[0,f\right]$ (see
+alg. \ref{alg:universesampling}). 
+\begin{algorithm}
+\caption{Universe Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~$R_{1}\left(A,\dots\right),R_{2}\left(A,\dots\right)$~
+
+~~sample~rate~$f$~
+
+~~hash~function~$h$
+
+\textbf{Output}:~$S$,~a~$\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Init}:~$S_{1},S_{2}\coloneqq[\cdots],[\cdots]$
+
+\textbf{Begin}:
+
+~~//~stream~$R_{1}$\label{alg:universesampling}
+
+~~while~$R_{1}$:
+
+~~~~$t_{1}=\mathtt{next}\left(R_{1}\right)$
+
+~~~~if~$h\left(t_{1}.A\right)<f$:~$S_{1}\coloneqq S_{1}\cup\left\{ t_{1}.A\right\} $
+
+~~//~stream~$R_{2}$
+
+~~while~$R_{2}$:
+
+~~~~$t_{2}=\mathtt{next}\left(R_{2}\right)$
+
+~~~~if~$h\left(t_{2}.A\right)<f$:~$S_{2}\coloneqq S_{2}\cup\left\{ t_{2}\right\} $
+
+~~$S\coloneqq S_{1}\bowtie S_{2}$
+\end{lyxcode}
+\end{algorithm}
+This guarantees that when $t_{1}\in R_{1}$ is sampled, all matching
+tuples $t_{2}\in R_{2}$ are also sampled since 
+\[
+t_{1}.A=t_{2}.A\iff h\left(t_{1}.A\right)=h\left(t_{2}.A\right)
+\]
+Hence, universe sampling produces a true uniformly random sample of
+$R_{1}\bowtie R_{2}$ (in expectation) since each tuples appears with
+probability $f$. Unfortunately, the samples are correlated: if 
+\[
+t_{1}.A=t_{2}.A=t_{1}'.A=t_{2}'.A
+\]
+then 
+\begin{multline*}
+\left(t_{1},t_{2}\right)\in\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)\iff\\
+\left(t_{1}',t_{2}'\right)\in\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)
+\end{multline*}
+This can lead to poor performance for approximate queries when the
+frequencies of attributes are highly concentrated: consider sampling
+from relations $R_{1},R_{2}$ each with $n$ identical tuples. The
+variance of the estimator \cite{universeinaccuarate} for the join
+size
+\[
+\frac{\left|S_{1}\bowtie S_{2}\right|}{f}\approx\left|R_{1}\bowtie R_{2}\right|
+\]
+is $n^{4}/f$ while the variance of the same estimator given uniform
+sampling is $n^{2}/f^{2}$, which is much lower when $n$ is large.
+
+\subsection{Correlation based sampling\label{subsec:Correlation-based-sampling}}
+
+Olken sampling and its extensions produce uncorrelated samples by
+enforcing (through various means) that a tuple in $R_{1}$ is joined
+with only one tuple in $R_{2}$; this leads to \textit{sample inflation}.
+Correlated sampling techniques, such as universe sampling, perform
+better with respect to sample inflation but suffer from poorer error
+estimates (see section \ref{subsec:Universe-sampling}). Correlation
+based sampling \cite{corrsampling} aims to mitigate the issues of
+correlated sampling, while preserving the benefits, by maximizing
+\textit{join randomness}. The join randomness of a sampling technique
+is the number of different possible samples that can be drawn by the
+technique given a fixed sample size (and given frequencies of attributes). 
+
+To motivate join randomness, consider naive sampling from $K$ relations
+with common attribute $A\subseteq D$ that takes on $\left|D\right|$
+distinct values. The maximum number of such samples depends combinatorially
+on the number drawn from each relation:
+\[
+\#\text{Samplings}=\prod_{j=1}^{\left|D\right|}\prod_{k=1}^{K}C_{m_{s_{k}}\left(a_{j}\right)}^{m_{k}\left(a_{j}\right)}
+\]
+where $m_{k}\left(a_{j}\right)$ are frequencies of value $a_{j}$
+in $R_{k}$ and $m_{s_{k}}\left(a_{j}\right)$ are the allocations
+of $a_{j}$ for sample $S_{k}$ of $R_{k}$ ($C_{b}^{a}$ is the binomial
+coefficient). For example, suppose $R_{1},R_{2}$ include an attribute
+$A$ with two distinct values $\left\{ a_{1},a_{2}\right\} $ and
+with frequencies 
+\begin{align*}
+m_{1}(a_{1})=m_{2}(a_{1}) & =10\\
+m_{1}(a_{2})=m_{2}(a_{2}) & =20
+\end{align*}
+If we sample both relations, thereby producing $S_{1}$ and $S_{2}$,
+and fix the sample size (the number sampled from either $S_{1}$ or
+$S_{2}$) to $M=30$ then the number of possible samples is 
+\[
+C_{m_{s_{1}}\left(a_{1}\right)}^{10}\times C_{m_{s_{2}}\left(a_{1}\right)}^{10}\times C_{m_{s_{1}}\left(a_{2}\right)}^{20}\times C_{m_{s_{2}}\left(a_{2}\right)}^{20}
+\]
+For various allocations of we see order of magnitude differences in
+the number of possible samplings:
+\begin{center}
+\begin{tabular}{ccccc}
+$m_{s_{1}}\left(a_{1}\right)$ & $m_{s_{2}}\left(a_{1}\right)$ & $m_{s_{1}}\left(a_{2}\right)$ & $m_{s_{2}}\left(a_{2}\right)$ & \# Samplings\tabularnewline[1ex]
+\hline 
+\noalign{\vskip1ex}
+5 & 5 & 10 & 10 & $2.2\times10^{15}$\tabularnewline
+3 & 7 & 8 & 12 & $2.3\times10^{14}$\tabularnewline
+2 & 3 & 12 & 13 & $5.3\times10^{13}$\tabularnewline
+1 & 1 & 14 & 14 & $1.5\times10^{11}$\tabularnewline
+\end{tabular}
+\par\end{center}
+
+\subsubsection{MaxRand join}
+
+\noindent In general, the allocation that maximizes the number of
+possible samplings, per distinct value $a_{j}$ of attribute $A$,
+for sample $S_{k}$, for a given total sample size $M$, is \cite{corrsampling}:
+\begin{equation}
+m_{s_{k}}\left(a_{j}\right)\coloneqq\operatorname{round}\text{\ensuremath{\left(\frac{M\cdot m_{k}\left(a_{j}\right)}{\sum_{j=1}^{\left|D\right|}\sum_{k=1}^{K}m_{k}\left(a_{j}\right)}\right)}}\label{eq:maxrandjoin}
+\end{equation}
+The MaxRand join algorithm uses this result to produce a maximally
+random join (see alg. \ref{alg:maxrandjoin}).
+\begin{algorithm}
+\caption{MaxRand Join}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~relations~$R_{1}\left(A,\dots\right),\dots,R_{K}\left(A,\dots\right)$
+
+~~$m_{s_{k}}\left(a_{j}\right)$
+
+\textbf{Output}:~$S$,~a~$\mathtt{SAMPLE}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Init}:~
+
+~~$S[\cdots]=[]$~~~
+
+\textbf{Begin}:
+
+~~for~$i\coloneqq1$~to~$K$:
+
+~~~~//~stream
+
+~~~~while~$R_{i}:$
+
+~~~~~~$S[i]\coloneqq[\cdots]$
+
+~~~~~~for~$j\coloneqq1$~to~$\left|D\right|$:
+
+~~~~~~~~//~independent~reservoirs~
+
+~~~~~~~~//~for~each~$a_{j}$
+
+~~~~~~~~$S[i]\coloneqq S[i]\cup$\label{alg:maxrandjoin}
+
+~~~~~~~~~~~~~$\mathtt{ReservoirSample}\left(R_{i},m_{s_{k}}\left(a_{j}\right),a_{j}\right)$
+
+~~$S\coloneqq S[1]\bowtie\cdots\bowtie S[K]$
+\end{lyxcode}
+\end{algorithm}
+The total cost of MaxRand join is the cost of constructing $m_{s_{k}}\left(a_{j}\right)$
+for $k=1,\dots,K$ and $j=1,\dots,\left|D\right|$, plus the cost
+of reservoir sampling each $R_{i}$; let 
+\[
+N\coloneqq\max_{k,j}m_{s_{k}}\left(a_{j}\right)
+\]
+then the total cost is 
+\[
+O\left(\left|D\right|\left|K\right|+\sum_{i=1}^{K}N\left(1+\log\left(\frac{\left|R_{i}\right|}{N}\right)\right)\right)
+\]
+
+
+\subsection{Ripple join}
+
+Ripple join \cite{ripplejoin} belongs to a class of techniques that
+address the online aggregation problem. Thus, ripple join isn't an
+operand sampling scheme per se but a streaming join algorithm that,
+by virtue of building the join incrementally, produces a sample of
+$R_{1}\bowtie\cdots\bowtie R_{K}$. As the full join is approached,
+running estimates for various aggregations converge. 
+
+In order to understand ripple join we first need to understand the
+\textit{streaming nested loops algorithm} \cite{onlineaggregation}.
+For example, for relations $R_{1},R_{2}$, with $\left|R_{1}\right|<\left|R_{2}\right|$,
+streaming nested loops first samples $t_{1}\in R_{1}$ and then $R_{2}$
+is scanned in search of tuples that satisfy the join condition. Once
+all such tuples are discovered, the running estimate of the aggregation
+function is updated. Note that for conventional batch processing,
+a query optimizer would select $R_{1}$ as the outer relation, while
+for streaming processing the reverse is preferable\footnote{Such that running estimates can be updated more frequently.}.
+In this case, if $\left|R_{1}\right|$ is nontrivial, then wait times
+for updates can be excessively long. Furthermore, if the aggregation
+is ``insensitive'' to the attribute values in $R_{1}$ then this
+leads to poor convergence\footnote{Since subsequent tuples from $R_{1}$ don't contribute new ``statistical
+information''.}. Such an example is 
+\[
+\mathtt{SELECT\,AVG}\left(R_{2}.A+R_{1}.B/10000000\right)\,\mathtt{FROM\,}R_{1},R_{2}
+\]
+where $R_{1}.B/10000000$ most likely does not move the average on
+each sampled tuple.
+\begin{figure*}
+\begin{centering}
+\includegraphics[width=1\linewidth]{ripplejoin}
+\par\end{centering}
+\caption{Ripple Join for $R_{1}\protect\bowtie R_{2}$ \cite{wanderjoin}.\label{fig:Ripple-Join-for}}
+\end{figure*}
+Ripple join address both of these issues by adaptively choosing which
+is the inner relation and which is the outer relation in the nested
+loops (see fig. \ref{fig:Ripple-Join-for}) and the \textit{aspect}
+\textit{ratios $\text{\ensuremath{\beta_{1},}\ensuremath{\beta_{2}}}$}
+of the join. The aspect ratios \textit{$\text{\ensuremath{\beta_{1},}\ensuremath{\beta_{2}}}$}
+determine how many times $R_{2}$ is sampled per outer loop and how
+many tuples are selected from $R_{1}$ per inner loop. 
+
+Using ripple join we can estimate various aggregations by calculating
+them over the ``current'' set of sampled tuples. Unsurprisingly,
+the variance of these estimates depends on the aspect ratios $\beta_{i}$:
+\[
+\hat{\sigma}^{2}\coloneqq\sum_{k=1}^{K}\frac{\hat{d}\left(k\right)}{\beta_{k}}
+\]
+where $\hat{d}\left(k\right)$ is an estimator for a term $d\left(k\right)$
+that takes a particular form for each aggregation \texttt{SUM},\texttt{
+COUNT}, or\texttt{ AVG} \cite{wanderjoin}. Thus, the confidence intervals
+can be minimized subject to an upper bound $c$ on the product of
+the aspect ratios\footnote{Since the product of the aspect ratios is the number of matches computed
+and hence proportional to total I/O.}:
+\begin{align}
+\mbox{minimize } & \sum_{k=1}^{K}\frac{\hat{d}\left(k\right)}{\beta_{k}}\nonumber \\
+\mbox{such that } & \prod_{k=1}^{K}\beta_{k}\leq c\label{eq:cost}\\
+ & 1\leq\beta_{k}\leq\left|R_{i}\right|\nonumber \\
+ & \beta_{k}\in\mathbb{N}\nonumber 
+\end{align}
+This is a non-linear integer programming problem which is, in general,
+NP-hard\footnote{By reduction from minimum vertex cover.}. Ripple
+join solves a relaxation such that
+\[
+\beta_{k}^{*}=\left(\frac{c}{\prod_{k=1}^{K}\hat{d}\left(k\right)}\right)^{1/K}\hat{d}\left(k\right)
+\]
+where $\hat{d}\left(k\right)$ is the estimate from the previous iteration. 
+
+\subsubsection{Hash ripple join}
+
+In the case of an equijoin we can use hashing to amortize lookup of
+previously matched tuples; when a new tuple is fetched from either
+relation it must be combined with all previously matched tuples from
+the other relation. If previously sampled tuples are hashed on the
+join column then it is possible to select them efficiently. This implies
+a reduction in the cost (eq. \ref{eq:cost}) of the $n$sampling steps
+to only $\sum_{k=1}^{K}\beta_{k}$ and therefore the optimal aspect
+ratios are
+\[
+\beta_{k}^{*}=\frac{c\sqrt{\hat{d}\left(k\right)}}{\sum_{j=1}^{K}\sqrt{\hat{d}\left(j\right)}}
+\]
+
+
+\subsection{Wander join}
+
+Wander join\cite{wanderjoin}, like ripple join, is a solution to
+the online aggregation problem. The key idea is to model a join over
+$K$ relations as a \textit{join graph}\footnote{Distinct from the join hypergraph.}\textit{
+}i.e. a $K$-partite graph where each partition corresponds to a relation
+and edges between vertices indicate a match on the join condition.
+Once such a model is adopted one can then further model streaming
+joins as random walks in the graph. Such random walks can then be
+used to construct unbiased estimators of various aggregations. 
+\begin{figure}
+\begin{centering}
+\includegraphics[width=0.5\linewidth]{wanderjoin}
+\par\end{centering}
+\caption{Wander join for $R_{1}\left(A,B\right)\protect\bowtie R_{2}\left(B,C\right)\protect\bowtie R_{3}\left(C,D\right)$
+\cite{wanderjoin}.\label{fig:wanderjoin}}
+\end{figure}
+
+Let $R_{1}\left(A,B\right),R_{2}\left(B,C\right),R_{3}\left(C,D\right)$
+be the relations of interest, 
+\[
+J\coloneqq R_{1}\left(A,B\right)\bowtie R_{2}\left(B,C\right)\bowtie R_{3}\left(C,D\right)
+\]
+be the join of interest. Also, let $d_{i+1}\left(t_{i}\right)$ be
+the number neighbors of $t_{i}$ in relation $R_{i+1}$ i.e the number
+of tuples in $R_{i+1}$ that join with $t_{i}$. A random walk (or
+path) $\gamma$ can be sampled from $J$ by picking a tuple (vertex)
+$t_{1}\in R_{1}$ uniformly at random and then uniformly at random
+selecting tuples $t_{2}\in R_{2},t_{3}\in R_{3}$ such that $t_{2}.B=t_{1}.B\,\wedge\,t_{3}.C=t_{2}.C$
+(see figure \ref{fig:wanderjoin}). Then, given an expression $g\left(R_{1},R_{2},R_{3}\right)$,
+we can construct a one point estimate of $\mathtt{SUM}\left(g\left(R_{1},R_{2},R_{3}\right)\right)$,
+for example, by
+\[
+X_{\gamma}\coloneqq\frac{g\left(\gamma\right)}{p\left(\gamma\right)}\quad p\left(\gamma\right)\coloneqq\frac{1}{\left|R_{1}\right|}\frac{1}{d_{2}\left(t_{1}\right)}\frac{1}{d_{3}\left(t_{2}\right)}
+\]
+where $p\left(\gamma\right)$ is the probability of sampling $\gamma$.
+This estimator is unbiased \cite{horvitzestimator} and hence the
+average of many such estimators (over paths $\Gamma$) is also unbiased:
+\[
+\hat{\mu}_{\Gamma}\coloneqq\frac{1}{\left|\Gamma\right|}\sum_{\gamma\in\Gamma}X_{\gamma}\Rightarrow E\left[\hat{\mu}_{\Gamma}\right]=\mathtt{SUM}\left(g\left(R_{1},R_{2},R_{3}\right)\right)
+\]
+The variance $\hat{\sigma}_{\Gamma}^{2}$ of $\hat{\mu}_{\Gamma}$
+is
+\[
+\hat{\sigma}_{\Gamma}^{2}\coloneqq\frac{1}{\left|\Gamma\right|-1}\sum_{\gamma\in\Gamma}\left(X_{\gamma}-\hat{\mu}_{\Gamma}\right)^{2}
+\]
+Furthermore, the \textit{walk plan, }i.e. the order of the relations
+sampled, can be optimized, in terms of estimator variance; by the
+\textit{law of total variance}
+\[
+\text{Var}\left(\frac{1}{\left|\Gamma\right|}\sum_{\gamma\in\Gamma}X_{\gamma}\right)=\frac{\textrm{Var}\left[X_{\gamma}\right]E\left[T\right]}{t}
+\]
+where $T$ is the running time of a single random walk and $t$ is
+the total time taken to sample $\Gamma$. Thus, by estimating both
+$\text{Var}\left[X_{\gamma}\right]$ and $E\left[T\right]$ from the
+walks themselves, we can choose the walk plan that minimizes the estimator
+variance.
+
+\subsubsection{Wander join for cyclic and acyclic joins}
+
+As described, wander join applies to chain joins (see fig. \ref{fig:chainjoin}).
+The algorithm can be extended to include merely acyclic joins (see
+fig. \ref{fig:starjoin}) by incorporating ``jumps'' into the random
+walk. For example, consider 
+\begin{multline*}
+R_{1}\left(A,B\right)\bowtie R_{2}\left(B,C,D\right)\bowtie R_{3}\left(C,E\right)\\
+\bowtie R_{4}\left(D,F\right)\bowtie R_{5}\left(F,G\right)
+\end{multline*}
+and fix a \textit{walk order} $R_{1},R_{2},R_{3},R_{4},R_{5}$. On
+sampling $t_{3}\in R_{3}$ we ``jump back'' to $t_{2}\in R_{2}$
+and sample $t_{4}\in R_{4}$ and so on. Given relations $R_{1},\dots,R_{K}$
+and a walk order $\left(R_{\lambda\left(1\right)},\dots,R_{\lambda\left(K\right)}\right)$,
+define $R_{\eta\left(i\right)}$ to be the relation corresponding
+to the ``parent'' of $R_{\lambda\left(i\right)}$. Then for the
+path $\gamma\coloneqq\left(t_{\lambda\left(1\right)},\dots,t_{\lambda\left(K\right)}\right)$
+\[
+p\left(\gamma\right)=\frac{1}{\left|R_{\lambda\left(1\right)}\right|}\prod_{k=2}^{K}\frac{1}{d_{\lambda\left(i\right)}\left(t_{\eta\left(i\right)}\right)}
+\]
+
+\begin{figure}
+\begin{centering}
+\subfloat[Cyclic join. ]{\centering{}\includegraphics[width=0.5\linewidth]{wanderjoincyclic}}
+\par\end{centering}
+\medskip{}
+\subfloat[Spanning tree of cyclic join.]{\centering{}\includegraphics[width=0.5\linewidth]{wanderjoinacyclic}}\caption{Join for $R_{1}\left(A,B\right)$, $R_{2}\left(B,C,D\right)$, $R_{3}\left(C,E\right)$,
+$R_{4}\left(D,F\right)$, $R_{5}\left(F,E\right)$. \label{fig:wanderjoincyclic}}
+\end{figure}
+Note that different walk orders lead to different execution times
+and estimator variances. This same adjustment can be extended to work
+for cyclic joins by first computing a directed spanning tree\footnote{A \textit{directed tree} is a tree in which every edge increases the
+distance from the root. A \textit{directed spanning tree} of a graph
+$G$ is spanning tree of $G$ that is also a directed tree.} of the join query graph (see fig. \ref{fig:wanderjoincyclic}).
+
+\subsection{Upper bound join}
+
+For any join $J\coloneqq R_{1}\bowtie R_{2}\bowtie\cdots\bowtie R_{K}$
+and any $t\in R_{i}$ define 
+\[
+w\left(t\right)\coloneqq\left|t\bowtie R_{i+1}\bowtie\cdots\bowtie R_{K}\right|
+\]
+with $w\left(t\right)\coloneqq1$ for $t\in R_{K}$. Note that every
+$t$ participates in $J$ proportional to $w\left(t\right)$. Thus,
+if we could approximate $w\left(t\right)$ for all $t\in J$ we could
+then produce an accurate sample of $J$. Of course, $w\left(t\right)$
+is not often available, but we can make use of a proxy $W\left(t\right)$
+that has properties
+\begin{align}
+W\left(t\right)\geq w\left(t\right) & \text{ for all }t\nonumber \\
+W\left(t\right)=w\left(t\right)=1 & \text{ for all }t\in R_{K}\label{eq:wproperties}\\
+W\left(t\right)\geq W\left(t\rtimes R_{i+1}\right) & \text{ for all }t\in R_{i}\text{ with }i<K\nonumber 
+\end{align}
+where $\rtimes$ is a right semi-join\footnote{$R_{1}\rtimes R_{2}$ is the set of all tuples in $R_{2}$ for which
+there is a matching tuple in $R_{1}$.}. Given such an $W\left(t\right)$, we can use alg. \ref{alg:upperboundsampling}
+to sample $J$ with replacement. The algorithm returns each join result
+$t$ with probability $1/W\left(t\right)$ \cite{JoinsRevisited}
+where 
+\[
+W\left(t\right)\geq\left|R_{1}\bowtie\cdots\bowtie t\bowtie\cdots\bowtie R_{K}\right|
+\]
+
+\begin{algorithm}
+\caption{Upper Bound Join}
+
+\begin{lyxcode}
+\textbf{Inputs}:~$R_{1},R_{2},\dots,R_{K}$,~$W\left(t\right)$~
+
+\textbf{Output}:~$t\in J$~or~reject
+
+\textbf{Init}:~$t\coloneqq\bot$
+
+\textbf{Begin}:\label{alg:upperboundsampling}
+
+~~for~$i\coloneqq1$~to~$K$:~~~~
+
+~~~~$W'\coloneqq W\left(t\right)$~~~~
+
+~~~~$W\coloneqq W\left(t\rtimes R_{i}\right)$
+
+~~~~if~$U\left(0,1\right)>W/W'$:~
+
+~~~~~~reject
+
+~~~~//~$t'\rightarrow\cdots$~is~a~lambda
+
+~~~~$w\left(t'\right)\coloneqq t'\rightarrow W\left(t'\right)/W\left(t\rtimes R_{i}\right)$
+
+~~~~$t\coloneqq\mathtt{BBWR2}\left(t\rtimes R_{i},1,w\left(t'\right)\right)$
+
+~~return~$t$
+\end{lyxcode}
+\end{algorithm}
+Note that employing upper bounds in this way is in effect a generalization
+of Olken sampling (see sec. \ref{subsec:Olken-sample}) and frequency
+partition sampling (see sec. \ref{subsec:Frequency-partition-sample}):
+in the case of frequency partition sampling $W\left(t\right)\coloneqq w\left(t\right)$.
+In the case of Olken sampling, let $M_{i}\coloneqq\max_{v\in D_{i}}m_{i}\left(v\right)$
+be the maximum frequency of the join attribute $A_{i}$ of relation
+$R_{i}$ and for all $t\in R_{i}$ set
+\[
+W\left(t\right)\coloneqq\prod_{j=i+1}^{K}M_{i}
+\]
+and then $W\left(t\right)$ obeys properties \ref{eq:wproperties}.
+Essentially this assumes that every tuple in $R_{i}$ joins with $M_{i+1}$
+tuples in $R_{i+1}$. 
+
+A tighter bound on $\left|J\right|$ can be constructed by considering
+\textit{fractional edge covers} of the join: the fractional edge cover
+of a join $J$ assigns a weight $u_{i}\geq0$ to each $R_{i}$, in
+proportion to the role $R_{i}$ plays in $J$, such that for every
+attribute in $A_{j}$ in $J$ we have
+\[
+\sum_{i\in I}u_{i}\geq1
+\]
+where $I=\left\{ i\mid R_{i}\left(A_{j},\dots\right)\right\} $. For
+any fractional edge cover
+\[
+\left|J\right|\le\prod_{i=1}^{K}\left|R_{i}\right|^{u_{i}}
+\]
+and a tight upper bound \cite{agmbound} can be found by minimizing\footnote{In practice $\sum_{i=1}^{K}u_{i}\log\left(\left|R_{i}\right|\right)$.}.
+Define this tight upper bound $\operatorname{AGM}$ and then we can
+set 
+\[
+W\left(t\right)\coloneqq\operatorname{AGM}\left(R_{i+1}\bowtie\cdots\bowtie R_{K}\right)
+\]
+for $t\in R_{i}$. 
+
+\section{Experiments\label{sec:Experiments}}
+
+We conducted experiments to test how well some of the above techniques
+reproduce the distribution of a uniform sampling of $J\coloneqq\left|R_{1}\bowtie R_{2}\right|$.
+To do this we generate two relations such that each $R_{i}$ has two
+join attributes (with one in common) and each has $\left|R_{i}\right|=n$
+realistic tuples. These tuples are realistic in the sense that they
+agree with Benford's law; they are produced by generating $n$ samples
+from a ratio of $\chi_{1}^{2}$ distributions \cite{benfordlaw}.
+We then ``quantize'' each sample to the two leading non-zero digits,
+thereby producing at most 90 different valid join keys. Once table
+are materialized, we produce a benchmark sample of $J$ (by performing
+the full join). We then compare the distribution of the indices of
+the benchmark sample against the distribution of the indices of samples
+generated by each of the techniques using the standard Kolmogorov--Smirnov
+(KS) test. The KS test tests whether two samples are sampled from
+the same distribution. We iterate across the design space of number
+of tuples $n\coloneqq10^{3},10^{4}$ and fraction sampled $f\coloneqq0.1,\dots,0.9$.
+Note that we constrain ourselves to two way joins and $n\coloneqq10^{3},10^{4}$
+because of the compute costs incurred in materializing the full joins
+for benchmarking; at $n=10^{4}$, with $f=0.5$, we are already constructing
+a join with $\sim10^{7}$ tuples (pushing the limit of our commodity
+grade compute resources).
+
+Figures \ref{fig:Group-join}, \ref{fig:Wander-join}, \ref{fig:Olken-join},
+\ref{fig:Hash-join}, \ref{fig:Stream-join} plot the pvalue and test
+statistic $D$ for the KS tests for each sampling fraction and relation
+cardinality. Correspondingly, figures \ref{fig:Group-join-1}, \ref{fig:Wander-join-1},
+\ref{fig:Olken-join-1}, \ref{fig:Hash-join-1}, \ref{fig:Stream-join-1}
+plot example sample distributions for each sampling strategy for $n=10^{4}$
+with $f=0.5$. From the results we can see that the algorithms do
+not all produce uniform samples of the full join. In particular wander
+join and hash join produce strikingly non-uniform samples of the full
+join; this is made evident by the fact that pvalues reported by the
+KS test across all sampling fractions, by both strategies, are approximately
+zero\footnote{The null hypothesis of the KS test is that the distributions are the
+same and hence with low pvalue we can reject that null hypothesis
+(i.e. the distributions are not the same).} (see figures \ref{fig:Wander-join}, \ref{fig:Hash-join}). This
+is further corroborated by the clearly skewed distributions (relative
+to ``full'' distribution) for $n=10^{4}$ with $f=0.5$ (see figures
+\ref{fig:Wander-join-1}, \ref{fig:Hash-join-1}). On the contrary
+stream, group, and Olken sampling all sample very nearly uniformly;
+this is made evident by the fact that pvalues reported by the KS test
+across all sampling fractions, by both strategies, are high and corresponding
+test statistics are low\footnote{The test statistic in KS measures $D=\sup_{x}\left|F_{1}(x)-F_{2}(x)\right|$,
+the maximum difference between the empirical cumulative distributions
+of the two samples and hence, when smell, indicates convergent distributions.}. It is, as of yet, unclear why wander join and hash join perform
+poorly relative to stream, group, and Olken but our suspicion is that
+it is owing to an implementation bug.
+
+\begin{figure}
+\subfloat[Distributions for $n=10^{4}$ with $f=0.5$.\label{fig:Group-join-1}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{groupjoin_2_10000_50.tex}
+	\end{adjustbox}}\medskip{}
+\subfloat[KS tests for $n\protect\coloneqq10^{3},10^{4}$ and $f\protect\coloneqq0.1,\dots,0.9$.\label{fig:Group-join}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{groupjoin.tex}
+	\end{adjustbox}
+
+}\caption{Group sample}
+\end{figure}
+\begin{figure}
+\subfloat[Sample distribution $n=10^{4}$ with $f=0.5$.\label{fig:Wander-join-1}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{wanderjoin_2_10000_50.tex}
+	\end{adjustbox}}\medskip{}
+\subfloat[KS tests for $n\protect\coloneqq10^{3},10^{4}$ and $f\protect\coloneqq0.1,\dots,0.9$.\label{fig:Wander-join}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{wanderjoin.tex}
+	\end{adjustbox}
+
+}\caption{Wander join}
+\end{figure}
+\begin{figure}
+\subfloat[Sample distribution $n=10^{4}$ with $f=0.5$.\label{fig:Olken-join-1}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{olkenjoin_2_10000_50.tex}
+	\end{adjustbox}}\medskip{}
+\subfloat[KS tests for $n\protect\coloneqq10^{3},10^{4}$ and $f\protect\coloneqq0.1,\dots,0.9$.\label{fig:Olken-join}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{olkenjoin.tex}
+	\end{adjustbox}
+
+}\caption{Olken sample}
+\end{figure}
+\begin{figure}
+\subfloat[Sample distribution $n=10^{4}$ with $f=0.5$.\label{fig:Hash-join-1}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{hashjoin_2_10000_50.tex}
+	\end{adjustbox}}\medskip{}
+\subfloat[KS tests for $n\protect\coloneqq10^{3},10^{4}$ and $f\protect\coloneqq0.1,\dots,0.9$.\label{fig:Hash-join}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{hashjoin.tex}
+	\end{adjustbox}
+
+}\caption{Hash join}
+\end{figure}
+\begin{figure}
+\subfloat[Sample distribution $n=10^{4}$ with $f=0.5$.\label{fig:Stream-join-1}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{streamjoin_2_10000_50.tex}
+	\end{adjustbox}}\medskip{}
+\subfloat[KS test for $n\protect\coloneqq10^{3},10^{4}$ and $f\protect\coloneqq0.1,\dots,0.9$.\label{fig:Stream-join}]{    \centering
+    \begin{adjustbox}{width=\linewidth,center}
+    	\input{streamjoin.tex}
+	\end{adjustbox}
+
+}\caption{Stream sample}
+\end{figure}
+
+
+\section{Conclusion\label{sec:Conclusion}}
+
+We studied the problem of commuting sampling with joins. In doing
+so we reviewed several classical sampling techniques and modern iterations
+thereof. Through our studies we discovered that the central challenge
+of successfully sampling through joins is performing weighted sampling
+according to frequencies of uniques values of the join attribute (in
+the ``right'' operand of the join). Thus, many of the techniques
+in the literature address themselves to either gathering these frequencies
+or building a surrogate. In order to further investigate the join
+sampling problem we implemented some of the studied techniques and
+evaluated their performance (with respect to sampling accuracy) on
+synthetic (but realistic data sets). We found that (with the exception
+of hash join and wander join) the sampling techniques accurately produce
+a uniform sampling of a join. In the future we intend to apply machine
+learning approaches to the problem, such as in \cite{krishnan2019learning}.
+
+\section{Appendix}
+
+\subsection{Fundamental sampling algorithms\label{subsec:Stream-sampling-algorithms}}
+
+We briefly describe some fundamental sampling algorithms that will
+ultimately be employed as blackbox primitives in more sophisticated
+algorithms.
+
+\subsubsection{Rejection sampling\label{subsec:Rejection-sampling}}
+
+Rejection sampling is a means of generating samples from some \textit{target}
+\textit{distribution $p(x)$} that cannot be sampled directly but
+for which we can construct a \textit{proposal distribution} $g(x)$
+that encompasses the target distribution. It is based on the observation
+that to sample $p(x)$, one can perform a sampling of the region under
+the graph\footnote{For probability density function $p(x)$, the set of ordered pairs
+$\left\{ (x,y)\mid0\leq y\leq p(x)\right\} $.} of $g(x)$, and reject all samples that fall outside of the graph
+of $p(x)$. In the simplest case, the proposal distribution is a uniform
+distribution $U(a,b)\times U(0,M)$, where $\left[a,b\right]$ is
+the support of $p\left(x\right)$ and $M$ is the least upper bound
+of $p(x)$. Then the algorithm is straightforward (see alg. \ref{alg:rejectionsampling}).
+The number of samples until ``acceptance'' follows a geometric distribution
+with probability $1/M$ and thus has expected number $M$. Alternatively,
+more efficient algorithms exist \cite{adapativereject}.
+
+\begin{algorithm}
+\caption{Rejection Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~target~distribution~$p\left(x\right)$~
+
+~~with~support~$\left[a,b\right]$~and~max~$M$~
+
+\textbf{Output}:~$\left(x,y\right)$~a~draw~from~$p$
+
+\textbf{Init}:~$U_{1}\sim U(a,b)$,~$U_{2}\sim U(0,M)$
+
+\textbf{Begin}:
+
+~~while~$p\left(U_{1}\right)<p\left(U_{2}\right)$:~//~reject~if~outside
+
+~~~~$U_{1}\sim U(a,b)$
+
+~~~~$U_{2}\sim U(0,M)$
+
+~~$\left(x,y\right)\coloneqq\left(U_{1},U_{2}\right)$\label{alg:rejectionsampling}
+\end{lyxcode}
+\end{algorithm}
+
+
+\subsubsection{Reservoir sampling without replacement}
+
+Reservoir sampling selects a simple random sample, without replacement,
+of $K$ items from a population of unknown size $n$ in a single pass
+over the items. The simplest such algorithm maintains a \textit{reservoir
+}of size $K$ and swaps out elements according to the desired sampling
+probability. See alg. \ref{alg:reservoirnaive}. This naive algorithm
+runs in $O\left(n\right)$ time since it calls a random number generator
+(RNG) for each element in the stream. 
+\begin{algorithm}
+\caption{Naive Reservoir Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~stream~$S$,~sample~size~$k$
+
+\textbf{Output}:~reservoir~$A$~with~$k$~samples
+
+\textbf{Init}:~for~$i\coloneqq1$~to~$k$:~$A[i]\coloneqq$~next$(S)$~~~
+
+\textbf{Begin}:
+
+~~//~replace~elements~with~gradually
+
+~~//~decreasing~probability~~~
+
+~~while~$S$:~~
+
+~~~~//~randomInteger~is~inclusive~~~
+
+~~~~$j\coloneqq$~randomInteger$(1,i)$~~~~~
+
+~~~~if~$j\leq k$:~~~~~~~~~
+
+~~~~~~~$A[j]\coloneqq$~next$(S)$~\label{alg:reservoirnaive}
+\end{lyxcode}
+\end{algorithm}
+
+The naive algorithm can be improved upon by instead discarding elements
+explicitly rather than including elements explicitly. We describe
+this algorithm constructively \cite{10.1145/198429.198435}:
+\begin{enumerate}
+\item We conceive of naive reservoir sampling as assigning draws $u_{i}$
+from $U\left(0,1\right)$ to each entry in the $S$ and then selecting
+the bottom $k$ elements. This proceeds by initially filling the reservoir
+and then successively replacing the largest element in the reservoir
+if the $u_{i}$ associated with $s_{i}$ is smaller than the largest
+element in the reservoir.
+\item If fact we don't actually need to maintain the set of draws $u_{i}$
+for the entire reservoir, just the largest $u_{i}$ in the reservoir.
+Call that that value $\theta$.
+\item The $u_{i}$ of the next $s_{i}$ to enter the reservoir is actually
+distributed $U\left(0,\theta\right)$.
+\item If $X_{i}\sim U(0,\theta)$ then for $Y=\max\left(X_{1},\dots,X_{k}\right)$
+we have 
+\[
+P\left(Y\leq y\right)=\left(\frac{y}{\theta}\right)^{k}
+\]
+by using $P\left(X_{i}\leq x\right)=x/\theta$ and by $X_{i}$ being
+i.i.d. Therefore, by using inverse CDF 
+\[
+U=\left(\frac{Y}{\theta}\right)^{k}\Rightarrow Y\sim\theta U^{1/k}\equiv\theta\exp\left(\frac{\log\left(U\right)}{k}\right)
+\]
+\item The number of elements $K$ discarded follows a geometric distribution
+where the probability of success is $\theta$\footnote{Recall that the draws $u_{i}$ are drawn from $U\left(0,1\right)$
+and for some $s_{i}$ to enter the reservoir it must be smaller than
+the current maximum element $\theta$ and hence $P\left(X\leq\theta\right)=\theta$.}. Thus, again by using inverse CD
+\[
+\begin{aligned}U & =1-\left(1-\theta\right)^{K+1}\Rightarrow\\
+\log\left(1-U\right) & =(K+1)\log\left(1-\theta\right)\Rightarrow\\
+K & =\left\lfloor \frac{\log\left(U\right)}{\log\left(1-\theta\right)}\right\rfloor 
+\end{aligned}
+\]
+where we use the fact that $1-U$ is also distributed $U\left(0,1\right)$.
+\item We don't actually need to compare against $\theta$ but just update
+it as a precursor to computing $K$.
+\end{enumerate}
+Thus, we can more efficiently reservoir sample by taking ``jumps''
+and only querying the RNG for included elements of the stream. See
+alg. \ref{alg:reservoirnaive-1}. The running time then is ${\displaystyle O(k(1+\log(n/k)))}$.
+
+\begin{algorithm}
+\caption{Optimal Reservoir Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~stream~$S$,~sample~size~$k$
+
+\textbf{Output}:~reservoir~$A$~with~$k$~samples
+
+\textbf{Init}:~
+
+~~//~initialize~the~reservoir~
+
+~~for~$i\coloneqq1$~to~$k$:~$A[i]\coloneqq$~next$(S)$~~
+
+\textbf{Begin:}
+
+~~//~note~that~$\theta=1$~since~$A$~consists
+
+~~//~of~$k$~samples~from~$U\left(0,1\right)$.
+
+~~//~$\mathtt{random}()$~draws~from~$U\left(0,1\right)$
+
+~~$\theta\coloneqq$~$\exp\left(\frac{\log\left(\mathtt{random}()\right)}{k}\right)$~~
+
+~~while~$S$:~~
+
+~~~~$k\coloneqq\left\lfloor \frac{\log\left(U\right)}{\log\left(1-\theta\right)}\right\rfloor $
+
+~~~~//~discard~$k$~elements
+
+~~~~while~$S$:~next$(S)$
+
+~~~~//~replace~random~element
+
+~~~~//~since~we~don't~need~to~compare
+
+~~~~$A[\mathtt{randomInteger}(1,k)]\coloneqq$~next$(S)$~\label{alg:reservoirnaive-1}
+
+~~~~//~update~$\max$~given~that~stored~
+
+~~~~//~element~was~drawn~from~$U\left(0,\theta\right)$
+
+~~~~$\theta\coloneqq\theta\cdot\exp\left(\frac{\log\left(U\right)}{k}\right)$~
+\end{lyxcode}
+\end{algorithm}
+
+
+\subsubsection{Unweighted streaming sampling with replacement\label{subsec:Unweighted-streaming-sampling}}
+
+We present two algorithms for unweighted sequential sampling with
+replacement; we omit proofs that these algorithms in fact uniformly
+sample\cite{10.1145/304181.304206}. The first algorithm \texttt{BBU1}
+fills the output array with copies\footnote{Whose quantity depends on a random variable drawn from a binomial
+distribution.} of successive tuples from streaming relation $S$. This, in effect,
+simulates sampling with replacement. The disadvantage of the alg.
+\ref{alg:reservoirnaive-1-1} is that the total size $n$ of the relation
+is a necessary prerequisite. Algorithm \texttt{BBU2}\textit{ }improves
+on algorithm \texttt{BBU1} by eliminating that prerequisite (see alg.
+\ref{alg:reservoirnaive-1-1-1}).
+
+\begin{algorithm}
+\caption{BBU1}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~stream~$S$
+
+~~sample~size~$k$~
+
+~~$n\coloneqq\left|S\right|$
+
+\textbf{Output}:~array~$A$~with~$k$~samples
+
+\textbf{Init}:~$x\coloneqq k$,~$i\coloneqq0$~
+
+\textbf{Begin}:
+
+~~while~$S$~and~$x>0$:~~
+
+~~~~$t\coloneqq$~next$(S)$~~
+
+~~~~$X\sim B\left(x,\frac{1}{n-i}\right)$~
+
+~~~~//~fill~$A$~with~$X$~copies~of~$t$
+
+~~~~for~$j\coloneqq1$~to~$X$:
+
+~~~~~~$A[i+j]\coloneqq t$~~~~\label{alg:reservoirnaive-1-1}
+
+~~~~$x\coloneqq x-X$
+
+~~~~$i\coloneqq i+1$
+\end{lyxcode}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{BBU2}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~stream~$S$
+
+~~sample~size~$k$
+
+\textbf{Output}:~array~$R$~with~$k$~samples
+
+\textbf{Init}:~$N\coloneqq0$,~$A[1,\dots,k]=0$~~~~
+
+\textbf{Begin}:
+
+~~while~$S$:~~
+
+~~~~$t\coloneqq$~next$(S)$~~~~
+
+~~~~$N\coloneqq N+1$
+
+~~~~//~set~$A[j]\coloneqq t$~with~
+
+~~~~//~probability~$1/N$
+
+~~~~for~$j\coloneqq1$~to~$k$:
+
+~~~~~~$X\sim U(0,1)$
+
+~~~~~~if~$X\leq\frac{1}{N}$:
+
+~~~~~~~~$A[j]\coloneqq t$~~~\label{alg:reservoirnaive-1-1-1}
+\end{lyxcode}
+\end{algorithm}
+
+
+\subsubsection{Weighted streaming sampling\label{subsec:Weighted-streaming-sampling}}
+
+The precise semantics of weighted sampling are as such: given a streaming
+relation $S$ with cardinality $n$, where each tuple $t\in S$ has
+associated weight $w(t)$, a weighted, with replacement, sample is
+produced by drawing $f\cdot n$ tuples with probability\footnote{Implying normalization if $\sum_{t\in S}w(t)\neq1$}
+proportional to $w(t)$. We can extend algorithms \ref{alg:reservoirnaive-1-1},
+\ref{alg:reservoirnaive-1-1-1} to respect these semantics; see algorithms
+\ref{alg:reservoirnaive-1-1-3}, \ref{alg:reservoirnaive-1-1-4}.
+
+\begin{algorithm}
+\caption{BBWR1}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~stream~$S$~
+
+~~sample~size~$k$~
+
+~~$n\coloneqq\left|S\right|$
+
+~~weights~$w(t)$
+
+\textbf{Output}:~array~$A$~with~$k$~samples
+
+\textbf{Init}:~$x\coloneqq k$,~$i\coloneqq0$,~$W\coloneqq\sum_{t\in S}w(t)$~
+
+\textbf{Begin}:
+
+~~while~$S$~and~$x>0$:~~
+
+~~~~$t\coloneqq$~next$(S)$~~~~
+
+~~~~$X\sim B\left(x,\frac{w(t)}{W-i}\right)$
+
+~~~~//~fill~$A$~with~$X$~copies~of~$t$
+
+~~~~for~$j\coloneqq1$~to~$X$:
+
+~~~~~~$A[i+j]\coloneqq t$~~~~\label{alg:reservoirnaive-1-1-3}
+
+~~~~$x\coloneqq x-X$
+
+~~~~$i\coloneqq i+w(t)$
+\end{lyxcode}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{BBWR2}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~stream~$S$~
+
+~~sample~size~$k$
+
+~~weights~$w(t)$
+
+\textbf{Output}:~array~$R$~with~$k$~samples
+
+\textbf{Init}:~$W\coloneqq0$,~$A[1,\dots,k]\coloneqq0$~~~~
+
+\textbf{Begin}:
+
+~~while~$S$:~~
+
+~~~~$t\coloneqq$~next$(S)$~~~~
+
+~~~~$W\coloneqq W+w(t)$
+
+~~~~//~set~$A[j]\coloneqq t$~with~
+
+~~~~//~probability~$w(t)/W$
+
+~~~~for~$j\coloneqq1$~to~$k$:
+
+~~~~~~$X\sim U(0,1)$
+
+~~~~~~if~$X\leq\frac{w(t)}{W}$:
+
+~~~~~~~~$A[j]\coloneqq t$~~~\label{alg:reservoirnaive-1-1-4}
+\end{lyxcode}
+\end{algorithm}
+
+
+\subsection{Technique implementations\label{subsec:Technique-implementations}}
+
+\begin{algorithm}
+\caption{Stream Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~$R_{1}\left(A,\dots\right),R_{2}\left(A,\dots\right)$~
+
+~~$k\coloneqq\left\lceil f\cdot\left|R_{1}\bowtie R_{2}\right|\right\rceil $~
+
+\textbf{Output}:~$S\equiv\mathtt{SAMPLE}_{WR}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Init:~}
+
+~~$S[1,\dots,k]\coloneqq0$
+
+~~$w(t)\coloneqq m_{2}\left(t.A\right)$~for~$t\in R_{1}$
+
+\textbf{Begin}:
+
+~~$S_{1}\coloneqq$~$\mathtt{BBWR2}\left(R_{1},k,w(t)\right)$
+
+~~for~$i\coloneqq1$~to~$k$:~~
+
+~~~~$t_{1}\coloneqq$~next$(S_{1})$~~~\label{alg:streamsample}
+
+~~~~$t_{2}\sim U\left(\left\{ t\mid t\in R_{2}\wedge t.A=t_{1}.A\right\} \right)$
+
+~~~~$S[i]\coloneqq\left(t_{1},t_{2}\right)$~~
+\end{lyxcode}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Group Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~$R_{1}\left(A,\dots\right),R_{2}\left(A,\dots\right)$~
+
+~~$k\coloneqq\left\lceil f\cdot\left|R_{1}\bowtie R_{2}\right|\right\rceil $~
+
+\textbf{Output}:~$S\equiv\mathtt{SAMPLE}_{WR}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Init:}
+
+~~$S[1,\dots,k]\coloneqq0$
+
+~~$w(t)\coloneqq m_{2}\left(t.A\right)$~for~$t\in R_{1}$
+
+\textbf{Begin}:
+
+~~$S_{1}\coloneqq$~$\mathtt{BlackBoxWR2}\left(R_{1},k,w(t)\right)$
+
+~~for~$i\coloneqq1$~to~$k$:~~
+
+~~~~$t_{1}\coloneqq S_{1}[i]$~~~\label{alg:groupsample}
+
+~~~~$t_{2}\coloneqq\mathtt{BlackBoxU2}\left(t_{1}\bowtie R_{2},1\right)$
+
+~~~~$S[i]\coloneqq\left(t_{1},t_{2}\right)$
+\end{lyxcode}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Frequency Partition Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~\label{alg:Frequency-Partition-Sample}
+
+~~$R_{1}\left(A,\dots\right),R_{2}\left(A,\dots\right)$,~$A\subseteq D$
+
+~~$k\coloneqq\left\lceil f\cdot\left|R_{1}\bowtie R_{2}\right|\right\rceil $
+
+~~//~low,~high~frequency~values~in~$R_{2}$
+
+~~$D^{lo},D^{hi}$~
+
+~~$R_{2}^{lo},R_{2}^{hi}\coloneqq\left.R_{2}\right|_{D^{lo}},\left.R_{2}\right|_{D^{hi}}$
+
+~~$w_{2}(t)\coloneqq m_{2}\left(t.A\right)$~for~$t\in R_{2}^{hi}$
+
+\textbf{Output}:~$S\equiv\mathtt{SAMPLE}_{WR}\left(R_{1}\bowtie R_{2},f\right)$
+
+\textbf{Begin}:
+
+~~//~stream~$R_{1}$
+
+~~while~$R_{1}$:
+
+~~~~//~partition~$R_{1}$
+
+~~~~$R_{1}^{lo}\coloneqq\left.R_{1}\right|_{D^{lo}}$~
+
+~~~~$R_{1}^{hi}\coloneqq\left.R_{1}\right|_{D^{hi}}$
+
+~~~~//~sample~but~also~collect~
+
+~~~~//~stats~$w_{1}\left(t\right)$~on~$R_{1}^{hi}$
+
+~~~~$S_{1},w_{1}\left(t\right)\coloneqq$~$\mathtt{BBWR2}\left(R_{1}^{hi},k,w(t)\right)$
+
+~~//~integrate/combine~stats~
+
+~~$w\left(t\right)\coloneqq w_{1}\left(t\right)\cup w_{2}\left(t\right)$
+
+~~//~from~$w\left(t\right)$~you~can~approximate
+
+~~$n_{hi}\coloneqq\left|R_{1}^{hi}\bowtie R_{2}^{hi}\right|$
+
+~~$R_{1}^{*}\coloneqq S_{1}\cup R_{1}^{lo}$
+
+~~//~stream~join
+
+~~while~$J^{*}\coloneqq R_{1}^{*}\bowtie R_{2}$:
+
+~~~~$n_{lo}\coloneqq\left.J^{*}\right|_{D^{lo}}$~//~i.e.~$n_{lo}\coloneqq\left|R_{1}^{lo}\bowtie R_{2}^{lo}\right|$
+
+~~~~//~partition~$J^{*}$~
+
+~~~~$J^{lo}\coloneqq\mathtt{BBU2}\left(\left.J^{*}\right|_{D^{lo}},k\right)$~
+
+~~~~//~$S_{1}\equiv\left\{ s_{i}\right\} $~and~just~
+
+~~~~//~like~in~Group-Sample
+
+~~~~$J^{hi}\coloneqq\mathtt{BBU2}\left(s_{i}\bowtie\left.J^{*}\right|_{D^{hi}},k\right)$
+
+~~//~\#~of~heads~and~tails
+
+~~//~$p=\frac{n_{hi}}{n_{lo}+n_{hi}},1-p=\frac{n_{lo}}{n_{lo}+n_{hi}}$
+
+~~$k_{lo},k_{hi}\coloneqq B\left(k,p\right)$~~~
+
+~~$S^{lo}\coloneqq\mathtt{BlackBoxUWoR2}\left(J^{lo},k_{lo}\right)$
+
+~~$S^{hi}\coloneqq\mathtt{BlackBoxUWoR2}\left(J^{hi},k_{hi}\right)$
+
+~~$S\coloneqq S^{lo}\cup S^{hi}$
+\end{lyxcode}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Count Sampling}
+
+\begin{lyxcode}
+\textbf{Inputs}:~
+
+~~$k$
+
+~~$R_{2}\left(A,\dots\right)$
+
+~~$S_{1}\subseteq R_{1}^{hi}$
+
+\textbf{Output}:~$S\equiv\left(S_{1}\bowtie R_{2}^{hi}\right)$
+
+Init:
+
+~~$H$~//~hash~table~for~counting
+
+\textbf{Begin}:
+
+~~while~$S_{1}$:
+
+~~~~$t\coloneqq\mathtt{next}\left(S_{1}\right)$
+
+~~~~//~count~number~of~tuples~such~that
+
+~~~~//~$t.A=v$
+
+~~~~$H[t.A]\coloneqq H[t.A]+1$~~~
+
+~~//~sample~$S_{2}\subseteq R_{2}$~such~that~
+
+~~//~the~number~of~tuples~$t$~with
+
+~~//~$t.A\equiv v$~is~exactly~$v$
+
+~~while~$S_{2}\coloneqq$~$\mathtt{BBWR2}\left(R_{2},H\right)$:
+
+~~~~$t_{1}\coloneqq\mathtt{next}\left(S_{2}\right)$~~~\label{alg:count-sample}
+
+~~~~$t_{2}\coloneqq\mathtt{BlackBoxWoR}\left(t_{1}\bowtie S_{1},1\right)$
+
+~~~~$S[i]\coloneqq\left(t_{1},t_{2}\right)$
+\end{lyxcode}
+\end{algorithm}
+
+\bibliographystyle{plain}
+\bibliography{biblio}
+
+\end{document}

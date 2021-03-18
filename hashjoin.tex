@@ -1,0 +1,76 @@
+% This file was created by tikzplotlib v0.9.8.
+\begin{tikzpicture}
+
+\definecolor{color0}{rgb}{0.12156862745098,0.466666666666667,0.705882352941177}
+\definecolor{color1}{rgb}{1,0.498039215686275,0.0549019607843137}
+\definecolor{color2}{rgb}{0.172549019607843,0.627450980392157,0.172549019607843}
+\definecolor{color3}{rgb}{0.83921568627451,0.152941176470588,0.156862745098039}
+
+\begin{axis}[
+legend cell align={left},
+legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=white!80!black},
+tick align=outside,
+tick pos=left,
+x grid style={white!69.0196078431373!black},
+xlabel={sample \(\displaystyle f\)},
+xmin=0.06, xmax=0.94,
+xtick style={color=black},
+y grid style={white!69.0196078431373!black},
+ymin=-0.0191365416083822, ymax=0.401867373776027,
+ytick style={color=black}
+]
+\addplot [semithick, color0]
+table {%
+0.1 8.34942750168255e-52
+0.2 3.32481751092495e-47
+0.3 5.16830231859641e-28
+0.4 1.28543062172452e-10
+0.5 6.2648211751132e-65
+0.6 2.58092644359044e-27
+0.7 9.47422702851892e-37
+0.8 2.11154786843285e-11
+0.9 1.07913142471793e-39
+};
+\addlegendentry{pv @ $10^3$}
+\addplot [semithick, color1]
+table {%
+0.1 0.351628735697949
+0.2 0.310895032499803
+0.3 0.250461812987004
+0.4 0.173159578189815
+0.5 0.382730832167645
+0.6 0.314521446480562
+0.7 0.322366469159021
+0.8 0.204134801933954
+0.9 0.341703279634314
+};
+\addlegendentry{$D$ @ $10^3$}
+\addplot [semithick, color2]
+table {%
+0.1 0
+0.2 0
+0.3 0
+0.4 0
+0.5 0
+0.6 0
+0.7 0
+0.8 0
+0.9 0
+};
+\addlegendentry{pv @ $10^4$}
+\addplot [semithick, color3]
+table {%
+0.1 0.288308985410744
+0.2 0.259726112883418
+0.3 0.234858619637902
+0.4 0.262920136939607
+0.5 0.247793276312996
+0.6 0.276762380300241
+0.7 0.266825918122284
+0.8 0.202111801488589
+0.9 0.228326612438621
+};
+\addlegendentry{$D$ @ $10^4$}
+\end{axis}
+
+\end{tikzpicture}
